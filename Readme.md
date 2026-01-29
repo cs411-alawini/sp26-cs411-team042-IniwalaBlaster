@@ -1,16 +1,42 @@
-# TeamID-SampleProject
-This is a template for CS411 project repository. Please make sure that your title follows the convention: [TeamID]-[YourTeamName]. All TeamID should have a three digit coding (i.e. if you are team 20, you should have `team020` as your ID.). You should also make sure that your url for this repository is [sp25-cs411-team000-teamname.git] so TAs can correctly clone your repository and keep them up-to-date.
+team042-IniwalaBlaster
 
-Once you setup your project, please remember to submit your team formation to the team form.
+This repository is the project workspace for CS411 – Team 042 (IniwalaBlaster).
 
-## Permission
-You should set the repository to private and add your team members as collaborators.
+The repository name and title follow the required convention:
+	•	Team ID: team042 (three-digit format)
+	•	Team Name: IniwalaBlaster
+	•	Repository Naming Convention: sp25-cs411-team042-iniwalablaster.git
 
-## Preparing for your release
-Eash submission should be in it's own [release](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases). Release are specific freezes to your repository. You should submit your commit hash on canvas or google sheet. When tagging your stage, please use the tag `stage.x` where x is the number to represent the stage.
+Once the project is set up, remember to submit your team formation using the official team form.
 
-## Keeping things up-to-date
-You should make sure you keep your project root files up-to-date. Information for each file/folders are explained.
+⸻
 
-## Code Contribution
-Individual code contribution will be used to evaluate individual contribution to the project.
+Preparing for Your Release
+	•	Each submission must be created as its own GitHub Release.
+	•	Releases act as frozen snapshots of your repository at submission time.
+	•	Submit the corresponding commit hash on Canvas or the provided Google Sheet.
+	•	Use the following tagging format when creating releases:
+
+stage.x
+
+where x is the stage number (e.g., stage.1, stage.2).
+
+Reference: GitHub Releases documentation.
+
+⸻
+
+Keeping Things Up-to-Date
+
+Ensure that all project root files and folders remain current throughout development. Each required file or directory should clearly reflect the latest state of your project.
+
+⸻
+
+Code Contribution
+	•	Individual code contributions will be evaluated to assess each team member’s participation.
+	•	All team members are expected to contribute meaningfully to the codebase.
+
+⸻
+
+Team Information
+	•	Team ID: team042
+	•	Team Name: IniwalaBlaster
