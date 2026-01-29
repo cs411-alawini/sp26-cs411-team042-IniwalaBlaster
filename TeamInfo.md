@@ -4,8 +4,8 @@
 
 |   Info      |        Description     |
 | ----------- | ---------------------- |
-| TeamID      |        Team-000        |
-| TeamName    |         sample         |
+| TeamID      |        Team-042        |
+| TeamName    |     IniwalaBlaster     |
 | Captain     |       Abdu Alawini     |
 | Captain     |  alawini@illinois.edu  |
 | Member1     |  Shadman Saqib Eusuf   |
