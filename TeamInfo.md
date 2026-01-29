@@ -1,4 +1,4 @@
-# team000-sample
+# team042-IniwalaBlaster
 
 ## Basic Information
 
