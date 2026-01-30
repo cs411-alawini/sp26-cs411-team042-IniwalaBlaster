@@ -6,14 +6,14 @@
 | ----------- | ---------------------- |
 | TeamID      |        Team-042        |
 | TeamName    |     IniwalaBlaster     |
-| Captain     |       Abdu Alawini     |
-| Captain     |  alawini@illinois.edu  |
-| Member1     |  Shadman Saqib Eusuf   |
-| Member1     |  seusuf2@illinois.edu  |
-| Member2     |     Aryaman Nasare     |
-| Member2     |  nasare2@illinois.edu  |
+| Captain     |        Jim Xiao        |
+| Captain     |  jxiao17@illinois.edu  |
+| Member1     |                        |
+| Member1     |  yilin22@illinois.edu  |
+| Member2     |                        |
+| Member2     | peiyuan8@illinois.edu  |
 | Member3     |                        |
-| Member3     |                        |
+| Member3     | zechen5@illinois.edu   |
 
 ## Project Information
 
