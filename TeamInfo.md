@@ -12,7 +12,7 @@
 | Member1     |  yilin22@illinois.edu  |
 | Member2     |                        |
 | Member2     | peiyuan8@illinois.edu  |
-| Member3     |                        |
+| Member3     |      Harry Chen        |
 | Member3     | zechen5@illinois.edu   |
 
 ## Project Information
