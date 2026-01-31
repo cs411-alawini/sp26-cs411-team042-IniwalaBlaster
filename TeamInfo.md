@@ -10,7 +10,7 @@
 | Captain     |  jxiao17@illinois.edu  |
 | Member1     |      Bill Wang         |
 | Member1     |  yilin22@illinois.edu  |
-| Member2     |        Peiyuan         |
+| Member2     |     Peiyuan Sun        |
 | Member2     | peiyuan8@illinois.edu  |
 | Member3     |      Harry Chen        |
 | Member3     | zechen5@illinois.edu   |
