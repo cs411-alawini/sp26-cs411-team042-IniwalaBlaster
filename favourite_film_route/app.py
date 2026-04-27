@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import os
 import shlex
+import secrets
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from textwrap import dedent
@@ -19,6 +22,8 @@ DB_NAME = os.environ.get("SCENETRIP_DB_NAME", "scenetrip")
 HOST = os.environ.get("SCENETRIP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SCENETRIP_WEB_PORT", "8000"))
 MYSQL_COMMAND = os.environ.get("SCENETRIP_MYSQL_COMMAND", "mysql")
+APP_DIR = Path(__file__).resolve().parent
+STAGE4_SQL = APP_DIR / "sql" / "05_stage4_advanced.sql"
 
 
 @dataclass
@@ -71,8 +76,39 @@ def mysql_query(sql: str) -> list[list[str]]:
     return [line.split("\t") for line in lines]
 
 
+def mysql_script(sql: str) -> None:
+    mysql_command = shlex.split(MYSQL_COMMAND)
+    proc = subprocess.run(
+        [
+            *mysql_command,
+            "-u",
+            DB_USER,
+            "--socket",
+            DB_SOCKET,
+            "--port",
+            DB_PORT,
+            "-D",
+            DB_NAME,
+        ],
+        input=sql,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "Unknown MySQL error")
+
+
 def sql_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "''")
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def ensure_stage4_schema() -> None:
+    if STAGE4_SQL.exists():
+        mysql_script(STAGE4_SQL.read_text(encoding="utf-8"))
 
 
 def try_connection() -> str | None:
@@ -81,6 +117,79 @@ def try_connection() -> str | None:
         return None
     except Exception as exc:
         return str(exc)
+
+
+def parse_cookies(cookie_header: str | None) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    if not cookie_header:
+        return cookies
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.strip().split("=", 1)
+        cookies[key] = value
+    return cookies
+
+
+def get_user_by_session(session_token: str | None) -> dict[str, str] | None:
+    if not session_token:
+        return None
+    rows = mysql_query(
+        f"""
+        SELECT u.app_user_id, u.username, COALESCE(u.home_city, '')
+        FROM app_sessions AS s
+        JOIN app_users AS u ON u.app_user_id = s.app_user_id
+        WHERE s.session_token = '{sql_escape(session_token)}'
+          AND s.expires_at > NOW()
+        LIMIT 1;
+        """
+    )
+    if not rows:
+        return None
+    return {"app_user_id": rows[0][0], "username": rows[0][1], "home_city": rows[0][2]}
+
+
+def create_app_user(username: str, password: str, home_city: str) -> str:
+    username = username.strip()
+    home_city = home_city.strip()
+    if len(username) < 3:
+        raise RuntimeError("Username must be at least 3 characters.")
+    if len(password) < 6:
+        raise RuntimeError("Password must be at least 6 characters.")
+    mysql_query(
+        f"""
+        INSERT INTO app_users (username, password_hash, home_city)
+        VALUES ('{sql_escape(username)}', '{hash_password(password)}', '{sql_escape(home_city)}');
+        """
+    )
+    return create_session(username, password)
+
+
+def create_session(username: str, password: str) -> str:
+    rows = mysql_query(
+        f"""
+        SELECT app_user_id
+        FROM app_users
+        WHERE username = '{sql_escape(username.strip())}'
+          AND password_hash = '{hash_password(password)}'
+        LIMIT 1;
+        """
+    )
+    if not rows:
+        raise RuntimeError("Invalid username or password.")
+    token = secrets.token_hex(32)
+    mysql_query(
+        f"""
+        INSERT INTO app_sessions (session_token, app_user_id, expires_at)
+        VALUES ('{token}', {int(rows[0][0])}, DATE_ADD(NOW(), INTERVAL 7 DAY));
+        """
+    )
+    return token
+
+
+def delete_session(session_token: str | None) -> None:
+    if session_token:
+        mysql_query(f"DELETE FROM app_sessions WHERE session_token = '{sql_escape(session_token)}';")
 
 
 def get_summary_cards() -> list[tuple[str, str]]:
@@ -488,6 +597,162 @@ def build_itinerary(movie_id: int, budget: float, departure_city: str) -> Itiner
     )
 
 
+def get_saved_plans(app_user_id: int) -> list[list[str]]:
+    return mysql_query(
+        f"""
+        SELECT
+            p.saved_plan_id,
+            p.plan_name,
+            m.title,
+            p.departure_city,
+            p.budget,
+            p.total_estimated_budget,
+            p.status,
+            COUNT(s.location_id) AS stop_count,
+            DATE_FORMAT(p.updated_at, '%Y-%m-%d %H:%i')
+        FROM saved_trip_plans AS p
+        JOIN movies AS m ON m.movie_id = p.movie_id
+        LEFT JOIN saved_trip_stops AS s ON s.saved_plan_id = p.saved_plan_id
+        WHERE p.app_user_id = {app_user_id}
+        GROUP BY p.saved_plan_id, p.plan_name, m.title, p.departure_city, p.budget,
+                 p.total_estimated_budget, p.status, p.updated_at
+        ORDER BY p.updated_at DESC, p.saved_plan_id DESC;
+        """
+    )
+
+
+def get_audit_rows(app_user_id: int) -> list[list[str]]:
+    return mysql_query(
+        f"""
+        SELECT event_type, COALESCE(saved_plan_id, ''), detail, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i')
+        FROM stage4_audit_log
+        WHERE app_user_id = {app_user_id}
+        ORDER BY created_at DESC, audit_id DESC
+        LIMIT 8;
+        """
+    )
+
+
+def save_itinerary_transaction(
+    app_user_id: int,
+    plan_name: str,
+    movie_id: int,
+    budget: float,
+    departure_city: str,
+) -> int:
+    plan_name = plan_name.strip() or "Movie trip plan"
+    plan = build_itinerary(movie_id, budget, departure_city)
+    stop_values = []
+    for index, stop in enumerate(plan.stop_rows, start=1):
+        stop_values.append(
+            f"(@saved_plan_id, {index}, {int(stop['location_id'])}, '{sql_escape(str(stop['airport_code']))}', {int(stop['recommended_days'])})"
+        )
+    stops_sql = ",\n".join(stop_values)
+    status = "within_budget" if plan.total_estimated_budget <= budget else "over_budget"
+
+    rows = mysql_query(
+        f"""
+        SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+        START TRANSACTION;
+
+        INSERT INTO saved_trip_plans (
+            app_user_id,
+            movie_id,
+            plan_name,
+            departure_city,
+            departure_airport,
+            budget,
+            total_estimated_budget,
+            total_days,
+            status
+        )
+        SELECT
+            {app_user_id},
+            m.movie_id,
+            '{sql_escape(plan_name)}',
+            '{sql_escape(plan.departure_city)}',
+            '{sql_escape(plan.departure_airport)}',
+            {budget:.2f},
+            {plan.total_estimated_budget:.2f},
+            {plan.total_days},
+            '{status}'
+        FROM movies AS m
+        JOIN movie_locations AS ml ON ml.movie_id = m.movie_id
+        WHERE m.movie_id = {movie_id}
+          AND EXISTS (
+              SELECT 1
+              FROM locations AS lx
+              JOIN movie_locations AS mlx ON mlx.location_id = lx.location_id
+              WHERE mlx.movie_id = m.movie_id
+          )
+        GROUP BY m.movie_id
+        HAVING COUNT(DISTINCT ml.location_id) >= 1;
+
+        SET @saved_plan_id = LAST_INSERT_ID();
+
+        INSERT INTO saved_trip_stops (saved_plan_id, stop_order, location_id, airport_code, recommended_days)
+        VALUES
+        {stops_sql};
+
+        INSERT INTO stage4_audit_log (event_type, saved_plan_id, app_user_id, detail)
+        SELECT
+            'PLAN_TRANSACTION_CREATED',
+            p.saved_plan_id,
+            p.app_user_id,
+            CONCAT('Saved ', COUNT(s.location_id), ' stops for ', MAX(m.title))
+        FROM saved_trip_plans AS p
+        JOIN saved_trip_stops AS s ON s.saved_plan_id = p.saved_plan_id
+        JOIN movies AS m ON m.movie_id = p.movie_id
+        WHERE p.saved_plan_id = @saved_plan_id
+        GROUP BY p.saved_plan_id, p.app_user_id;
+
+        SELECT @saved_plan_id;
+        COMMIT;
+        """
+    )
+    if not rows or not rows[-1][0] or rows[-1][0] == "0":
+        raise RuntimeError("Plan was not saved. Choose a highly rated movie with mapped locations.")
+    return int(rows[-1][0])
+
+
+def update_saved_plan(app_user_id: int, saved_plan_id: int, plan_name: str, budget: float) -> None:
+    mysql_query(
+        f"""
+        UPDATE saved_trip_plans
+        SET plan_name = '{sql_escape(plan_name.strip())}',
+            budget = {budget:.2f},
+            status = CASE
+                WHEN total_estimated_budget > {budget:.2f} THEN 'over_budget'
+                ELSE 'within_budget'
+            END
+        WHERE saved_plan_id = {saved_plan_id}
+          AND app_user_id = {app_user_id};
+        """
+    )
+
+
+def delete_saved_plan(app_user_id: int, saved_plan_id: int) -> None:
+    mysql_query(
+        f"""
+        DELETE FROM saved_trip_plans
+        WHERE saved_plan_id = {saved_plan_id}
+          AND app_user_id = {app_user_id};
+        """
+    )
+
+
+def get_recommendations(keyword: str, budget: float, departure_city: str) -> list[list[str]]:
+    return mysql_query(
+        f"""
+        CALL sp_movie_trip_recommendations(
+            '{sql_escape(keyword)}',
+            {budget:.2f},
+            '{sql_escape(departure_city)}'
+        );
+        """
+    )
+
+
 def render_table(headers: list[str], rows: list[list[str]], empty_message: str) -> str:
     if not rows:
         return f"<p class='empty'>{html.escape(empty_message)}</p>"
@@ -567,14 +832,268 @@ def render_itinerary(plan: ItineraryPlan | None) -> str:
     """
 
 
+def render_auth_panel(current_user: dict[str, str] | None) -> str:
+    if current_user:
+        return f"""
+        <div class="panel-body">
+          <ul class="status-list">
+            <li><span>Signed in</span><strong>{html.escape(current_user['username'])}</strong></li>
+            <li><span>Home city</span><strong>{html.escape(current_user['home_city'] or 'Not set')}</strong></li>
+          </ul>
+          <form method="POST" action="/auth/logout" class="single-action">
+            <button type="submit">Log out</button>
+          </form>
+        </div>
+        """
+
+    return """
+    <div class="panel-body auth-grid">
+      <form method="POST" action="/auth/login">
+        <label>Username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required /></label>
+        <button type="submit">Log in</button>
+      </form>
+      <form method="POST" action="/auth/register">
+        <label>New username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required minlength="6" /></label>
+        <label>Home city <input name="home_city" value="Chicago" required /></label>
+        <button type="submit">Register</button>
+      </form>
+    </div>
+    """
+
+
+def render_top_auth(current_user: dict[str, str] | None) -> str:
+    if current_user:
+        return f"""
+        <div class="top-login signed-in">
+          <span>{html.escape(current_user['username'])}</span>
+          <form method="POST" action="/auth/logout">
+            <button type="submit">Log out</button>
+          </form>
+        </div>
+        """
+
+    return """
+    <div class="top-login">
+      <a class="login-link" href="/login">Log in / Register</a>
+    </div>
+    """
+
+
+def render_saved_plans(saved_plans: list[list[str]], current_user: dict[str, str] | None) -> str:
+    if not current_user:
+        return "<p class='empty'>Log in to save and manage trip plans.</p>"
+    if not saved_plans:
+        return "<p class='empty'>No saved trip plans yet.</p>"
+
+    rows = []
+    for plan_id, plan_name, movie_title, departure_city, budget, total, status, stop_count, updated_at in saved_plans:
+        rows.append(
+            f"""
+            <tr>
+              <td>#{html.escape(plan_id)}</td>
+              <td>
+                <strong>{html.escape(plan_name)}</strong>
+                <small>{html.escape(movie_title)} from {html.escape(departure_city)}</small>
+              </td>
+              <td>{html.escape(stop_count)}</td>
+              <td>${float(budget):.2f}</td>
+              <td>${float(total):.2f}</td>
+              <td>{html.escape(status)}</td>
+              <td>{html.escape(updated_at)}</td>
+              <td>
+                <form method="POST" action="/plans/update" class="inline-form">
+                  <input type="hidden" name="saved_plan_id" value="{html.escape(plan_id)}" />
+                  <input name="plan_name" value="{html.escape(plan_name)}" required />
+                  <input name="budget" type="number" min="200" step="50" value="{html.escape(budget)}" required />
+                  <button type="submit">Update</button>
+                </form>
+                <form method="POST" action="/plans/delete" class="inline-form">
+                  <input type="hidden" name="saved_plan_id" value="{html.escape(plan_id)}" />
+                  <button type="submit" class="danger-button">Delete</button>
+                </form>
+              </td>
+            </tr>
+            """
+        )
+    return f"""
+    <table class="saved-table">
+      <thead>
+        <tr><th>ID</th><th>Plan</th><th>Stops</th><th>Budget</th><th>Estimate</th><th>Status</th><th>Updated</th><th>Actions</th></tr>
+      </thead>
+      <tbody>{''.join(rows)}</tbody>
+    </table>
+    """
+
+
+def render_recommendations(rows: list[list[str]]) -> str:
+    if not rows:
+        return "<p class='empty'>Run the stored procedure to show movie trip recommendations.</p>"
+    return render_table(
+        ["Movie ID", "Title", "Rating", "Genre", "Stops", "First City", "Airport", "Direct Routes", "Budget Floor"],
+        rows,
+        "No recommendations matched the stored procedure inputs.",
+    )
+
+
+def render_audit(rows: list[list[str]], current_user: dict[str, str] | None) -> str:
+    if not current_user:
+        return "<p class='empty'>Log in to view trigger and transaction audit events.</p>"
+    if not rows:
+        return "<p class='empty'>No audit events yet.</p>"
+    return render_table(["Event", "Plan", "Detail", "Time"], rows, "No audit events yet.")
+
+
+def render_login_page(flash: FlashMessage | None = None) -> str:
+    flash_html = ""
+    if flash:
+        flash_html = f"<div class='flash {html.escape(flash.level)}'>{html.escape(flash.text)}</div>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SceneTrip Login</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: #f6f6f6;
+      color: #222222;
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }}
+    .topbar {{
+      display: flex;
+      min-height: 48px;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #d7d7d7;
+      background: #ffffff;
+      padding: 0 20px;
+    }}
+    .brand {{
+      color: #222222;
+      font-size: 18px;
+      font-weight: 700;
+      text-decoration: none;
+    }}
+    .back-link {{
+      color: #1f73cf;
+      font-weight: 700;
+      text-decoration: none;
+    }}
+    .login-shell {{
+      display: grid;
+      width: min(760px, calc(100vw - 32px));
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin: 36px auto;
+    }}
+    .panel {{
+      border: 1px solid #d7d7d7;
+      border-radius: 4px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    }}
+    .panel h1,
+    .panel h2 {{
+      margin: 0;
+      border-bottom: 1px solid #d7d7d7;
+      background: #eeeeee;
+      padding: 11px 14px;
+      font-size: 15px;
+    }}
+    form {{
+      display: grid;
+      gap: 12px;
+      padding: 14px;
+    }}
+    label {{
+      display: grid;
+      gap: 6px;
+      color: #666666;
+      font-size: 13px;
+    }}
+    input {{
+      min-height: 36px;
+      border: 1px solid #d7d7d7;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font: inherit;
+    }}
+    button {{
+      min-height: 36px;
+      border: 0;
+      border-radius: 4px;
+      background: #2f86d7;
+      color: #ffffff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }}
+    .flash {{
+      width: min(760px, calc(100vw - 32px));
+      margin: 18px auto 0;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      padding: 11px 14px;
+      font-weight: 700;
+    }}
+    .flash.error {{ background: rgba(160,50,50,0.12); color: #a03232; }}
+    .flash.success {{ background: rgba(29,107,68,0.12); color: #1d6b44; }}
+    @media (max-width: 720px) {{
+      .login-shell {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">SceneTrip</a>
+    <a class="back-link" href="/">Back to planner</a>
+  </header>
+  {flash_html}
+  <main class="login-shell">
+    <section class="panel">
+      <h1>Log in</h1>
+      <form method="POST" action="/auth/login">
+        <label>Username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required /></label>
+        <button type="submit">Log in</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>Register</h2>
+      <form method="POST" action="/auth/register">
+        <label>Username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required minlength="6" /></label>
+        <label>Home city <input name="home_city" value="Chicago" required /></label>
+        <button type="submit">Create account</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
 def render_page(
     *,
     flash: FlashMessage | None = None,
     db_error: str | None = None,
     itinerary: ItineraryPlan | None = None,
+    current_user: dict[str, str] | None = None,
+    saved_plans: list[list[str]] | None = None,
+    recommendations: list[list[str]] | None = None,
+    audit_rows: list[list[str]] | None = None,
     departure_city: str = "",
     selected_movie_title: str = "",
     selected_budget: str = "1800",
+    recommendation_keyword: str = "",
+    recommendation_budget: str = "1800",
+    recommendation_city: str = "Chicago",
 ) -> str:
     summary = []
     featured_movies = []
@@ -598,6 +1117,20 @@ def render_page(
         movie_suggestions.append(
             f"<option value='{html.escape(title)}'>{html.escape(title)} | rating {rating} | {genre} | {filming_stop_count} stop(s)</option>"
         )
+
+    save_plan_html = ""
+    if itinerary and current_user:
+        save_plan_html = f"""
+        <form method="POST" action="/plans/create" class="save-form">
+          <input type="hidden" name="movie_title" value="{html.escape(selected_movie_title or itinerary.movie_title)}" />
+          <input type="hidden" name="budget" value="{html.escape(selected_budget)}" />
+          <input type="hidden" name="departure_city" value="{html.escape(departure_city or itinerary.departure_city)}" />
+          <label>Plan name <input name="plan_name" value="{html.escape(itinerary.movie_title)} trip" required /></label>
+          <button type="submit">Save Trip Plan</button>
+        </form>
+        """
+    elif itinerary:
+        save_plan_html = "<p class='empty'>Log in to save this generated itinerary.</p>"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -700,6 +1233,35 @@ def render_page(
       gap: 8px;
       padding: 0 16px;
     }}
+    .top-login {{
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+    }}
+    .top-login button {{
+      min-height: 32px;
+      padding: 5px 11px;
+    }}
+    .top-login.signed-in {{
+      font-weight: 700;
+    }}
+    .login-link {{
+      display: inline-flex;
+      min-height: 32px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #eeeeee;
+      padding: 5px 12px;
+      color: #222222;
+      font-weight: 700;
+    }}
+    .login-link:hover {{
+      background: #e2e2e2;
+      text-decoration: none;
+    }}
     .top-status {{
       border: 1px solid var(--line);
       border-radius: 4px;
@@ -799,6 +1361,31 @@ def render_page(
       display: grid;
       gap: 12px;
     }}
+    .auth-grid {{
+      display: grid;
+      gap: 14px;
+      grid-template-columns: 1fr;
+    }}
+    .single-action {{
+      margin-top: 12px;
+    }}
+    .save-form {{
+      margin-top: 14px;
+      border-top: 1px solid var(--line-soft);
+      padding-top: 14px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+    }}
+    .inline-form {{
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) 92px auto;
+      gap: 6px;
+      margin-bottom: 6px;
+    }}
+    .inline-form:last-child {{
+      grid-template-columns: auto;
+      margin-bottom: 0;
+    }}
     label {{
       display: grid;
       gap: 6px;
@@ -835,6 +1422,8 @@ def render_page(
       cursor: pointer;
     }}
     button:hover {{ background: var(--blue-dark); }}
+    .danger-button {{ background: #b84a4a; }}
+    .danger-button:hover {{ background: #963737; }}
     .btn-muted {{ background: #dddddd; color: #222222; }}
     .btn-muted:hover {{ background: #d2d2d2; }}
     .note,
@@ -915,6 +1504,11 @@ def render_page(
       padding: 8px 0;
     }}
     .status-list li:last-child {{ border-bottom: 0; }}
+    .saved-table small {{
+      display: block;
+      color: var(--muted);
+      margin-top: 3px;
+    }}
     .tag {{
       display: inline-flex;
       min-width: 64px;
@@ -946,7 +1540,17 @@ def render_page(
         border-top: 1px solid var(--line-soft);
       }}
       .nav-link {{ min-height: 42px; }}
-      .auth-actions {{ margin-left: auto; }}
+      .auth-actions {{
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-end;
+        border-top: 1px solid var(--line-soft);
+      }}
+      .top-login {{
+        width: 100%;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }}
       .shell {{
         width: calc(100vw - 20px);
         padding-top: 16px;
@@ -969,8 +1573,9 @@ def render_page(
       <a class="nav-link" href="#itinerary">Itinerary</a>
       <a class="nav-link" href="#database">Database</a>
     </nav>
-    <div class="auth-actions" aria-label="Application status">
-      <span class="top-status">Stage 4.1</span>
+    <div class="auth-actions" aria-label="Account">
+      {render_top_auth(current_user)}
+      <span class="top-status">Stage 4.2</span>
     </div>
   </header>
 
@@ -1015,13 +1620,38 @@ def render_page(
           </div>
         </section>
 
+        <section class="panel" id="recommendations">
+          <header class="panel-header">
+            <h2>Stored Procedure Recommendations</h2>
+          </header>
+          <div class="panel-body">
+            <form method="POST" action="/recommend">
+              <div class="form-grid">
+                <label>Keyword <input name="keyword" value="{html.escape(recommendation_keyword)}" /></label>
+                <label>Budget <input name="budget" type="number" min="200" step="50" value="{html.escape(recommendation_budget)}" required /></label>
+                <label>Departure city <input name="departure_city" value="{html.escape(recommendation_city)}" required /></label>
+              </div>
+              <button type="submit">Run Procedure</button>
+            </form>
+          </div>
+          {render_recommendations(recommendations or [])}
+        </section>
+
         <section class="panel" id="itinerary">
           <header class="panel-header">
             <h2>Generated Itinerary</h2>
           </header>
           <div class="panel-body">
             {render_itinerary(itinerary)}
+            {save_plan_html}
           </div>
+        </section>
+
+        <section class="panel" id="saved-plans">
+          <header class="panel-header">
+            <h2>Saved Trip Plans</h2>
+          </header>
+          {render_saved_plans(saved_plans or [], current_user)}
         </section>
       </div>
 
@@ -1046,6 +1676,13 @@ def render_page(
             </ul>
           </div>
         </section>
+
+        <section class="panel" id="audit">
+          <header class="panel-header">
+            <h2>Trigger Audit</h2>
+          </header>
+          {render_audit(audit_rows or [], current_user)}
+        </section>
       </aside>
     </section>
   </main>
@@ -1054,14 +1691,34 @@ def render_page(
 
 
 class SceneTripHandler(BaseHTTPRequestHandler):
+    def current_user(self) -> dict[str, str] | None:
+        cookies = parse_cookies(self.headers.get("Cookie"))
+        return get_user_by_session(cookies.get("scenetrip_session"))
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
         flash = None
         if "message" in params:
             flash = FlashMessage(params.get("level", ["success"])[0], params["message"][0])
+        if parsed.path == "/login":
+            body = render_login_page(flash=flash)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+            return
         db_error = try_connection()
-        body = render_page(flash=flash, db_error=db_error)
+        current_user = None if db_error else self.current_user()
+        saved_plans = get_saved_plans(int(current_user["app_user_id"])) if current_user and not db_error else []
+        audit_rows = get_audit_rows(int(current_user["app_user_id"])) if current_user and not db_error else []
+        body = render_page(
+            flash=flash,
+            db_error=db_error,
+            current_user=current_user,
+            saved_plans=saved_plans,
+            audit_rows=audit_rows,
+        )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -1073,6 +1730,28 @@ class SceneTripHandler(BaseHTTPRequestHandler):
         payload = self.rfile.read(content_length).decode("utf-8")
         form = {key: values[0] for key, values in parse_qs(payload).items()}
         try:
+            cookies = parse_cookies(self.headers.get("Cookie"))
+            current_user = self.current_user()
+
+            if parsed.path == "/auth/register":
+                token = create_app_user(
+                    form.get("username", ""),
+                    form.get("password", ""),
+                    form.get("home_city", ""),
+                )
+                self.redirect("/?message=Account+created&level=success", session_token=token)
+                return
+
+            if parsed.path == "/auth/login":
+                token = create_session(form.get("username", ""), form.get("password", ""))
+                self.redirect("/?message=Logged+in&level=success", session_token=token)
+                return
+
+            if parsed.path == "/auth/logout":
+                delete_session(cookies.get("scenetrip_session"))
+                self.redirect("/?message=Logged+out&level=success", clear_session=True)
+                return
+
             if parsed.path == "/plan":
                 movie_title = form.get("movie_title", "").strip()
                 movie_row = find_movie_by_title(movie_title)
@@ -1080,10 +1759,15 @@ class SceneTripHandler(BaseHTTPRequestHandler):
                 budget = float(form.get("budget", "").strip())
                 departure_city = form.get("departure_city", "").strip()
                 itinerary = build_itinerary(movie_id, budget, departure_city)
+                saved_plans = get_saved_plans(int(current_user["app_user_id"])) if current_user else []
+                audit_rows = get_audit_rows(int(current_user["app_user_id"])) if current_user else []
                 body = render_page(
                     flash=FlashMessage("success", "Itinerary generated from live database content."),
                     db_error=try_connection(),
                     itinerary=itinerary,
+                    current_user=current_user,
+                    saved_plans=saved_plans,
+                    audit_rows=audit_rows,
                     departure_city=departure_city,
                     selected_movie_title=movie_row[1],
                     selected_budget=form.get("budget", "1800").strip(),
@@ -1093,20 +1777,87 @@ class SceneTripHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body.encode("utf-8"))
                 return
+
+            if parsed.path == "/recommend":
+                keyword = form.get("keyword", "").strip()
+                budget = float(form.get("budget", "1800"))
+                departure_city = form.get("departure_city", "").strip()
+                recommendations = get_recommendations(keyword, budget, departure_city)
+                saved_plans = get_saved_plans(int(current_user["app_user_id"])) if current_user else []
+                audit_rows = get_audit_rows(int(current_user["app_user_id"])) if current_user else []
+                body = render_page(
+                    flash=FlashMessage("success", "Stored procedure returned recommendations."),
+                    db_error=try_connection(),
+                    current_user=current_user,
+                    saved_plans=saved_plans,
+                    recommendations=recommendations,
+                    audit_rows=audit_rows,
+                    recommendation_keyword=keyword,
+                    recommendation_budget=form.get("budget", "1800"),
+                    recommendation_city=departure_city,
+                )
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body.encode("utf-8"))
+                return
+
+            if parsed.path == "/plans/create":
+                if not current_user:
+                    raise RuntimeError("Log in before saving a trip plan.")
+                movie_row = find_movie_by_title(form.get("movie_title", ""))
+                saved_plan_id = save_itinerary_transaction(
+                    int(current_user["app_user_id"]),
+                    form.get("plan_name", ""),
+                    int(movie_row[0]),
+                    float(form.get("budget", "0")),
+                    form.get("departure_city", ""),
+                )
+                self.redirect(f"/?message=Saved+plan+{saved_plan_id}&level=success#saved-plans")
+                return
+
+            if parsed.path == "/plans/update":
+                if not current_user:
+                    raise RuntimeError("Log in before updating a trip plan.")
+                update_saved_plan(
+                    int(current_user["app_user_id"]),
+                    int(form.get("saved_plan_id", "0")),
+                    form.get("plan_name", ""),
+                    float(form.get("budget", "0")),
+                )
+                self.redirect("/?message=Plan+updated&level=success#saved-plans")
+                return
+
+            if parsed.path == "/plans/delete":
+                if not current_user:
+                    raise RuntimeError("Log in before deleting a trip plan.")
+                delete_saved_plan(
+                    int(current_user["app_user_id"]),
+                    int(form.get("saved_plan_id", "0")),
+                )
+                self.redirect("/?message=Plan+deleted&level=success#saved-plans")
+                return
+
             self.redirect("/?message=Unknown+action&level=error")
         except Exception as exc:
-            self.redirect(f"/?message={quote_plus(str(exc))}&level=error")
+            target = "/login" if parsed.path.startswith("/auth/") else "/"
+            self.redirect(f"{target}?message={quote_plus(str(exc))}&level=error")
 
     def log_message(self, format: str, *args) -> None:
         return
 
-    def redirect(self, target: str) -> None:
+    def redirect(self, target: str, session_token: str | None = None, clear_session: bool = False) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", target)
+        if session_token:
+            self.send_header("Set-Cookie", f"scenetrip_session={session_token}; HttpOnly; Path=/; SameSite=Lax")
+        if clear_session:
+            self.send_header("Set-Cookie", "scenetrip_session=; Max-Age=0; HttpOnly; Path=/; SameSite=Lax")
         self.end_headers()
 
 
 def main() -> None:
+    ensure_stage4_schema()
     server = ThreadingHTTPServer((HOST, PORT), SceneTripHandler)
     print(
         dedent(
