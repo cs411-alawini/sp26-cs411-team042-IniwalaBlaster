@@ -1,14 +1,14 @@
-USE scenetrip;
+use scenetrip;
 
-ALTER TABLE users
-  MODIFY home_airport VARCHAR(8) NOT NULL;
+alter table users
+  modify home_airport varchar(8) not null;
 
-ALTER TABLE locations
-  MODIFY airport_code VARCHAR(8) NOT NULL;
+alter table locations
+  modify airport_code varchar(8) not null;
 
-ALTER TABLE flights
-  MODIFY source_airport VARCHAR(8) NOT NULL,
-  MODIFY dest_airport VARCHAR(8) NOT NULL;
+alter table flights
+  modify source_airport varchar(8) not null,
+  modify dest_airport varchar(8) not null;
 
-ALTER TABLE trip_plans
-  MODIFY start_airport VARCHAR(8) NOT NULL;
+alter table trip_plans
+  modify start_airport varchar(8) not null;

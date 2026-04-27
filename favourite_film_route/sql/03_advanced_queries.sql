@@ -1,104 +1,104 @@
-USE scenetrip;
+use scenetrip;
 
 -- Query 1: filming destinations with strong movie quality and outbound connectivity.
-SELECT
+select
     l.city_name,
     l.state_name,
     l.airport_code,
-    COUNT(DISTINCT ml.movie_id) AS movies_filmed,
-    ROUND(AVG(m.rating), 2) AS avg_movie_rating,
-    COUNT(DISTINCT CONCAT(f.source_airport, '-', f.dest_airport)) AS outbound_routes
-FROM locations AS l
-JOIN movie_locations AS ml
-    ON l.location_id = ml.location_id
-JOIN movies AS m
-    ON ml.movie_id = m.movie_id
-JOIN flights AS f
-    ON l.airport_code = f.source_airport
-WHERE m.rating >= 7.5
-GROUP BY l.city_name, l.state_name, l.airport_code
-HAVING COUNT(DISTINCT ml.movie_id) >= 3
-ORDER BY avg_movie_rating DESC, outbound_routes DESC, l.city_name
-LIMIT 15;
+    count(distinct ml.movie_id) as movies_filmed,
+    round(avg(m.rating), 2) as avg_movie_rating,
+    count(distinct concat(f.source_airport, '-', f.dest_airport)) as outbound_routes
+from locations as l
+join movie_locations as ml
+    on l.location_id = ml.location_id
+join movies as m
+    on ml.movie_id = m.movie_id
+join flights as f
+    on l.airport_code = f.source_airport
+where m.rating >= 7.5
+group by l.city_name, l.state_name, l.airport_code
+having count(distinct ml.movie_id) >= 3
+order by avg_movie_rating desc, outbound_routes desc, l.city_name
+limit 15;
 
 -- Query 2: trip plans whose consecutive stops all have available flights and whose
 -- filming locations beat the overall average movie rating.
-SELECT
+select
     tp.trip_plan_id,
     tp.plan_name,
     u.username,
-    COUNT(DISTINCT tps.location_id) AS stop_count,
-    ROUND(AVG(m.rating), 2) AS avg_filming_rating
-FROM trip_plans AS tp
-JOIN users AS u
-    ON tp.user_id = u.user_id
-JOIN trip_plan_stops AS tps
-    ON tp.trip_plan_id = tps.trip_plan_id
-JOIN movie_locations AS ml
-    ON tps.location_id = ml.location_id
-JOIN movies AS m
-    ON ml.movie_id = m.movie_id
-WHERE tp.total_budget <= 2500
-  AND NOT EXISTS (
-      SELECT 1
-      FROM trip_plan_stops AS s1
-      JOIN trip_plan_stops AS s2
-          ON s1.trip_plan_id = s2.trip_plan_id
-         AND s2.stop_order = s1.stop_order + 1
-      JOIN locations AS l1
-          ON l1.location_id = s1.location_id
-      JOIN locations AS l2
-          ON l2.location_id = s2.location_id
-      LEFT JOIN flights AS f
-          ON f.source_airport = l1.airport_code
-         AND f.dest_airport = l2.airport_code
-      WHERE s1.trip_plan_id = tp.trip_plan_id
-        AND f.flight_id IS NULL
+    count(distinct tps.location_id) as stop_count,
+    round(avg(m.rating), 2) as avg_filming_rating
+from trip_plans as tp
+join users as u
+    on tp.user_id = u.user_id
+join trip_plan_stops as tps
+    on tp.trip_plan_id = tps.trip_plan_id
+join movie_locations as ml
+    on tps.location_id = ml.location_id
+join movies as m
+    on ml.movie_id = m.movie_id
+where tp.total_budget <= 2500
+  and not exists (
+      select 1
+      from trip_plan_stops as s1
+      join trip_plan_stops as s2
+          on s1.trip_plan_id = s2.trip_plan_id
+         and s2.stop_order = s1.stop_order + 1
+      join locations as l1
+          on l1.location_id = s1.location_id
+      join locations as l2
+          on l2.location_id = s2.location_id
+      left join flights as f
+          on f.source_airport = l1.airport_code
+         and f.dest_airport = l2.airport_code
+      where s1.trip_plan_id = tp.trip_plan_id
+        and f.flight_id is null
   )
-GROUP BY tp.trip_plan_id, tp.plan_name, u.username
-HAVING AVG(m.rating) > (
-    SELECT AVG(rating)
-    FROM movies
+group by tp.trip_plan_id, tp.plan_name, u.username
+having avg(m.rating) > (
+    select avg(rating)
+    from movies
 )
-ORDER BY stop_count DESC, avg_filming_rating DESC, tp.trip_plan_id
-LIMIT 15;
+order by stop_count desc, avg_filming_rating desc, tp.trip_plan_id
+limit 15;
 
 -- Query 3: actors whose movies are tied to above-average airport connectivity
 -- and appear in at least two trip plans.
-SELECT
+select
     a.actor_id,
     a.actor_name,
-    COUNT(DISTINCT m.movie_id) AS movie_count,
-    COUNT(DISTINCT tp.trip_plan_id) AS featured_trip_plans,
-    ROUND(AVG(conn.route_count), 2) AS avg_city_connectivity
-FROM actors AS a
-JOIN movie_actors AS ma
-    ON a.actor_id = ma.actor_id
-JOIN movies AS m
-    ON ma.movie_id = m.movie_id
-JOIN movie_locations AS ml
-    ON m.movie_id = ml.movie_id
-JOIN locations AS l
-    ON ml.location_id = l.location_id
-JOIN (
-    SELECT source_airport, COUNT(*) AS route_count
-    FROM flights
-    GROUP BY source_airport
-) AS conn
-    ON conn.source_airport = l.airport_code
-LEFT JOIN trip_plan_stops AS tps
-    ON ml.location_id = tps.location_id
-LEFT JOIN trip_plans AS tp
-    ON tps.trip_plan_id = tp.trip_plan_id
-WHERE conn.route_count > (
-    SELECT AVG(route_total)
-    FROM (
-        SELECT COUNT(*) AS route_total
-        FROM flights
-        GROUP BY source_airport
-    ) AS route_stats
+    count(distinct m.movie_id) as movie_count,
+    count(distinct tp.trip_plan_id) as featured_trip_plans,
+    round(avg(conn.route_count), 2) as avg_city_connectivity
+from actors as a
+join movie_actors as ma
+    on a.actor_id = ma.actor_id
+join movies as m
+    on ma.movie_id = m.movie_id
+join movie_locations as ml
+    on m.movie_id = ml.movie_id
+join locations as l
+    on ml.location_id = l.location_id
+join (
+    select source_airport, count(*) as route_count
+    from flights
+    group by source_airport
+) as conn
+    on conn.source_airport = l.airport_code
+left join trip_plan_stops as tps
+    on ml.location_id = tps.location_id
+left join trip_plans as tp
+    on tps.trip_plan_id = tp.trip_plan_id
+where conn.route_count > (
+    select avg(route_total)
+    from (
+        select count(*) as route_total
+        from flights
+        group by source_airport
+    ) as route_stats
 )
-GROUP BY a.actor_id, a.actor_name
-HAVING COUNT(DISTINCT tp.trip_plan_id) >= 2
-ORDER BY avg_city_connectivity DESC, movie_count DESC, a.actor_name
-LIMIT 15;
+group by a.actor_id, a.actor_name
+having count(distinct tp.trip_plan_id) >= 2
+order by avg_city_connectivity desc, movie_count desc, a.actor_name
+limit 15;

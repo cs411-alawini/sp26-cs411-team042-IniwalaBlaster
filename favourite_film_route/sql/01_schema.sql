@@ -1,97 +1,97 @@
-DROP DATABASE IF EXISTS scenetrip;
-CREATE DATABASE scenetrip;
-USE scenetrip;
+drop database if exists scenetrip;
+create database scenetrip;
+use scenetrip;
 
-CREATE TABLE users (
-    user_id INT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    home_airport CHAR(3) NOT NULL,
-    created_at DATETIME NOT NULL
+create table users (
+    user_id int primary key,
+    username varchar(50) not null unique,
+    email varchar(100) not null unique,
+    home_airport char(3) not null,
+    created_at datetime not null
 );
 
-CREATE TABLE movies (
-    movie_id INT PRIMARY KEY,
-    title VARCHAR(120) NOT NULL,
-    release_year SMALLINT NOT NULL,
-    rating DECIMAL(3,1) NOT NULL,
-    runtime_minutes SMALLINT NOT NULL,
-    primary_genre VARCHAR(40) NOT NULL
+create table movies (
+    movie_id int primary key,
+    title varchar(120) not null,
+    release_year smallint not null,
+    rating decimal(3,1) not null,
+    runtime_minutes smallint not null,
+    primary_genre varchar(40) not null
 );
 
-CREATE TABLE actors (
-    actor_id INT PRIMARY KEY,
-    actor_name VARCHAR(100) NOT NULL,
-    birth_year SMALLINT,
-    nationality VARCHAR(60)
+create table actors (
+    actor_id int primary key,
+    actor_name varchar(100) not null,
+    birth_year smallint,
+    nationality varchar(60)
 );
 
-CREATE TABLE locations (
-    location_id INT PRIMARY KEY,
-    city_name VARCHAR(80) NOT NULL,
-    state_name VARCHAR(80),
-    country_code CHAR(2) NOT NULL,
-    airport_code CHAR(3) NOT NULL,
-    latitude DECIMAL(9,6) NOT NULL,
-    longitude DECIMAL(9,6) NOT NULL
+create table locations (
+    location_id int primary key,
+    city_name varchar(80) not null,
+    state_name varchar(80),
+    country_code char(2) not null,
+    airport_code char(3) not null,
+    latitude decimal(9,6) not null,
+    longitude decimal(9,6) not null
 );
 
-CREATE TABLE flights (
-    flight_id INT PRIMARY KEY,
-    source_airport CHAR(3) NOT NULL,
-    dest_airport CHAR(3) NOT NULL,
-    carrier VARCHAR(50) NOT NULL,
-    depart_time TIME NOT NULL,
-    arrive_time TIME NOT NULL,
-    distance_miles INT NOT NULL,
-    daily_frequency TINYINT NOT NULL,
-    CONSTRAINT chk_distinct_airports CHECK (source_airport <> dest_airport)
+create table flights (
+    flight_id int primary key,
+    source_airport char(3) not null,
+    dest_airport char(3) not null,
+    carrier varchar(50) not null,
+    depart_time time not null,
+    arrive_time time not null,
+    distance_miles int not null,
+    daily_frequency tinyint not null,
+    constraint chk_distinct_airports check (source_airport <> dest_airport)
 );
 
-CREATE TABLE trip_plans (
-    trip_plan_id INT PRIMARY KEY,
-    user_id INT NOT NULL,
-    plan_name VARCHAR(100) NOT NULL,
-    created_at DATETIME NOT NULL,
-    start_airport CHAR(3) NOT NULL,
-    total_budget DECIMAL(10,2) NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
+create table trip_plans (
+    trip_plan_id int primary key,
+    user_id int not null,
+    plan_name varchar(100) not null,
+    created_at datetime not null,
+    start_airport char(3) not null,
+    total_budget decimal(10,2) not null,
+    foreign key (user_id) references users(user_id)
 );
 
-CREATE TABLE movie_actors (
-    movie_id INT NOT NULL,
-    actor_id INT NOT NULL,
-    billing_order TINYINT NOT NULL,
-    PRIMARY KEY (movie_id, actor_id),
-    FOREIGN KEY (movie_id) REFERENCES movies(movie_id),
-    FOREIGN KEY (actor_id) REFERENCES actors(actor_id)
+create table movie_actors (
+    movie_id int not null,
+    actor_id int not null,
+    billing_order tinyint not null,
+    primary key (movie_id, actor_id),
+    foreign key (movie_id) references movies(movie_id),
+    foreign key (actor_id) references actors(actor_id)
 );
 
-CREATE TABLE movie_locations (
-    movie_id INT NOT NULL,
-    location_id INT NOT NULL,
-    scene_count TINYINT NOT NULL,
-    is_primary_location BOOLEAN NOT NULL,
-    PRIMARY KEY (movie_id, location_id),
-    FOREIGN KEY (movie_id) REFERENCES movies(movie_id),
-    FOREIGN KEY (location_id) REFERENCES locations(location_id)
+create table movie_locations (
+    movie_id int not null,
+    location_id int not null,
+    scene_count tinyint not null,
+    is_primary_location boolean not null,
+    primary key (movie_id, location_id),
+    foreign key (movie_id) references movies(movie_id),
+    foreign key (location_id) references locations(location_id)
 );
 
-CREATE TABLE trip_plan_stops (
-    trip_plan_id INT NOT NULL,
-    stop_order TINYINT NOT NULL,
-    location_id INT NOT NULL,
-    planned_days TINYINT NOT NULL,
-    PRIMARY KEY (trip_plan_id, stop_order),
-    FOREIGN KEY (trip_plan_id) REFERENCES trip_plans(trip_plan_id),
-    FOREIGN KEY (location_id) REFERENCES locations(location_id)
+create table trip_plan_stops (
+    trip_plan_id int not null,
+    stop_order tinyint not null,
+    location_id int not null,
+    planned_days tinyint not null,
+    primary key (trip_plan_id, stop_order),
+    foreign key (trip_plan_id) references trip_plans(trip_plan_id),
+    foreign key (location_id) references locations(location_id)
 );
 
-CREATE TABLE booked_flights (
-    trip_plan_id INT NOT NULL,
-    leg_order TINYINT NOT NULL,
-    flight_id INT NOT NULL,
-    PRIMARY KEY (trip_plan_id, leg_order),
-    FOREIGN KEY (trip_plan_id) REFERENCES trip_plans(trip_plan_id),
-    FOREIGN KEY (flight_id) REFERENCES flights(flight_id)
+create table booked_flights (
+    trip_plan_id int not null,
+    leg_order tinyint not null,
+    flight_id int not null,
+    primary key (trip_plan_id, leg_order),
+    foreign key (trip_plan_id) references trip_plans(trip_plan_id),
+    foreign key (flight_id) references flights(flight_id)
 );

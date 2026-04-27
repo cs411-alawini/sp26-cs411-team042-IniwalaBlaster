@@ -108,12 +108,12 @@ def hash_password(password: str) -> str:
 
 def ensure_stage4_schema() -> None:
     if STAGE4_SQL.exists():
-        mysql_script(STAGE4_SQL.read_text(encoding="utf-8"))
+        mysql_script(STAGE4_SQL.read_text(encoding="utf-8-sig"))
 
 
 def try_connection() -> str | None:
     try:
-        mysql_query("SELECT 1;")
+        mysql_query("select 1;")
         return None
     except Exception as exc:
         return str(exc)
@@ -136,12 +136,12 @@ def get_user_by_session(session_token: str | None) -> dict[str, str] | None:
         return None
     rows = mysql_query(
         f"""
-        SELECT u.app_user_id, u.username, COALESCE(u.home_city, '')
-        FROM app_sessions AS s
-        JOIN app_users AS u ON u.app_user_id = s.app_user_id
-        WHERE s.session_token = '{sql_escape(session_token)}'
-          AND s.expires_at > NOW()
-        LIMIT 1;
+        select u.app_user_id, u.username, coalesce(u.home_city, '')
+        from app_sessions as s
+        join app_users as u on u.app_user_id = s.app_user_id
+        where s.session_token = '{sql_escape(session_token)}'
+          and s.expires_at > now()
+        limit 1;
         """
     )
     if not rows:
@@ -158,8 +158,8 @@ def create_app_user(username: str, password: str, home_city: str) -> str:
         raise RuntimeError("Password must be at least 6 characters.")
     mysql_query(
         f"""
-        INSERT INTO app_users (username, password_hash, home_city)
-        VALUES ('{sql_escape(username)}', '{hash_password(password)}', '{sql_escape(home_city)}');
+        insert into app_users (username, password_hash, home_city)
+        values ('{sql_escape(username)}', '{hash_password(password)}', '{sql_escape(home_city)}');
         """
     )
     return create_session(username, password)
@@ -168,11 +168,11 @@ def create_app_user(username: str, password: str, home_city: str) -> str:
 def create_session(username: str, password: str) -> str:
     rows = mysql_query(
         f"""
-        SELECT app_user_id
-        FROM app_users
-        WHERE username = '{sql_escape(username.strip())}'
-          AND password_hash = '{hash_password(password)}'
-        LIMIT 1;
+        select app_user_id
+        from app_users
+        where username = '{sql_escape(username.strip())}'
+          and password_hash = '{hash_password(password)}'
+        limit 1;
         """
     )
     if not rows:
@@ -180,8 +180,8 @@ def create_session(username: str, password: str) -> str:
     token = secrets.token_hex(32)
     mysql_query(
         f"""
-        INSERT INTO app_sessions (session_token, app_user_id, expires_at)
-        VALUES ('{token}', {int(rows[0][0])}, DATE_ADD(NOW(), INTERVAL 7 DAY));
+        insert into app_sessions (session_token, app_user_id, expires_at)
+        values ('{token}', {int(rows[0][0])}, date_add(now(), interval 7 day));
         """
     )
     return token
@@ -189,15 +189,15 @@ def create_session(username: str, password: str) -> str:
 
 def delete_session(session_token: str | None) -> None:
     if session_token:
-        mysql_query(f"DELETE FROM app_sessions WHERE session_token = '{sql_escape(session_token)}';")
+        mysql_query(f"delete from app_sessions where session_token = '{sql_escape(session_token)}';")
 
 
 def get_summary_cards() -> list[tuple[str, str]]:
     queries = {
-        "Movies": "SELECT COUNT(*) FROM movies;",
-        "Filming Locations": "SELECT COUNT(*) FROM locations;",
-        "Routes": "SELECT COUNT(*) FROM flights;",
-        "Movie Links": "SELECT COUNT(*) FROM movie_locations;",
+        "Movies": "select count(*) from movies;",
+        "Filming Locations": "select count(*) from locations;",
+        "Routes": "select count(*) from flights;",
+        "Movie Links": "select count(*) from movie_locations;",
     }
     cards = []
     for label, query in queries.items():
@@ -209,17 +209,17 @@ def get_summary_cards() -> list[tuple[str, str]]:
 def get_featured_movies(limit: int = 250) -> list[list[str]]:
     return mysql_query(
         f"""
-        SELECT
+        select
             m.title,
-            MIN(m.movie_id) AS movie_id,
-            ROUND(MAX(m.rating), 1) AS rating,
-            SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT m.primary_genre ORDER BY m.primary_genre SEPARATOR ', '), ',', 1) AS primary_genre,
-            COUNT(DISTINCT ml.location_id) AS filming_stop_count
-        FROM movies m
-        JOIN movie_locations ml ON ml.movie_id = m.movie_id
-        GROUP BY m.title
-        ORDER BY MAX(m.rating) DESC, filming_stop_count DESC, m.title
-        LIMIT {limit};
+            min(m.movie_id) as movie_id,
+            round(max(m.rating), 1) as rating,
+            substring_index(group_concat(distinct m.primary_genre order by m.primary_genre separator ', '), ',', 1) as primary_genre,
+            count(distinct ml.location_id) as filming_stop_count
+        from movies m
+        join movie_locations ml on ml.movie_id = m.movie_id
+        group by m.title
+        order by max(m.rating) desc, filming_stop_count desc, m.title
+        limit {limit};
         """
     )
 
@@ -227,10 +227,10 @@ def get_featured_movies(limit: int = 250) -> list[list[str]]:
 def get_movie_by_id(movie_id: int) -> list[str]:
     rows = mysql_query(
         f"""
-        SELECT movie_id, title, ROUND(rating, 1), primary_genre
-        FROM movies
-        WHERE movie_id = {movie_id}
-        LIMIT 1;
+        select movie_id, title, round(rating, 1), primary_genre
+        from movies
+        where movie_id = {movie_id}
+        limit 1;
         """
     )
     if not rows:
@@ -242,16 +242,16 @@ def find_movie_by_title(movie_title: str) -> list[str]:
     title = sql_escape(movie_title.strip())
     rows = mysql_query(
         f"""
-        SELECT
-            MIN(m.movie_id) AS movie_id,
+        select
+            min(m.movie_id) as movie_id,
             m.title,
-            ROUND(MAX(m.rating), 1) AS rating,
-            SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT m.primary_genre ORDER BY m.primary_genre SEPARATOR ', '), ',', 1) AS primary_genre
-        FROM movies m
-        JOIN movie_locations ml ON ml.movie_id = m.movie_id
-        WHERE m.title = '{title}'
-        GROUP BY m.title
-        LIMIT 1;
+            round(max(m.rating), 1) as rating,
+            substring_index(group_concat(distinct m.primary_genre order by m.primary_genre separator ', '), ',', 1) as primary_genre
+        from movies m
+        join movie_locations ml on ml.movie_id = m.movie_id
+        where m.title = '{title}'
+        group by m.title
+        limit 1;
         """
     )
     if rows:
@@ -259,17 +259,17 @@ def find_movie_by_title(movie_title: str) -> list[str]:
 
     rows = mysql_query(
         f"""
-        SELECT
-            MIN(m.movie_id) AS movie_id,
+        select
+            min(m.movie_id) as movie_id,
             m.title,
-            ROUND(MAX(m.rating), 1) AS rating,
-            SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT m.primary_genre ORDER BY m.primary_genre SEPARATOR ', '), ',', 1) AS primary_genre
-        FROM movies m
-        JOIN movie_locations ml ON ml.movie_id = m.movie_id
-        WHERE m.title LIKE '%{title}%'
-        GROUP BY m.title
-        ORDER BY MAX(m.rating) DESC, m.title
-        LIMIT 1;
+            round(max(m.rating), 1) as rating,
+            substring_index(group_concat(distinct m.primary_genre order by m.primary_genre separator ', '), ',', 1) as primary_genre
+        from movies m
+        join movie_locations ml on ml.movie_id = m.movie_id
+        where m.title like '%{title}%'
+        group by m.title
+        order by max(m.rating) desc, m.title
+        limit 1;
         """
     )
     if not rows:
@@ -281,11 +281,11 @@ def find_departure_airports(city: str) -> list[list[str]]:
     city = sql_escape(city)
     return mysql_query(
         f"""
-        SELECT location_id, city_name, airport_code, latitude, longitude
-        FROM locations
-        WHERE city_name LIKE '%{city}%'
-        ORDER BY city_name, airport_code
-        LIMIT 8;
+        select location_id, city_name, airport_code, latitude, longitude
+        from locations
+        where city_name like '%{city}%'
+        order by city_name, airport_code
+        limit 8;
         """
     )
 
@@ -293,20 +293,20 @@ def find_departure_airports(city: str) -> list[list[str]]:
 def get_movie_stops(movie_id: int) -> list[list[str]]:
     return mysql_query(
         f"""
-        SELECT
+        select
             l.location_id,
             l.city_name,
-            COALESCE(l.state_name, ''),
+            coalesce(l.state_name, ''),
             l.airport_code,
             l.latitude,
             l.longitude,
             ml.scene_count,
             ml.is_primary_location
-        FROM movie_locations ml
-        JOIN locations l ON l.location_id = ml.location_id
-        WHERE ml.movie_id = {movie_id}
-        ORDER BY ml.is_primary_location DESC, ml.scene_count DESC, l.city_name
-        LIMIT 6;
+        from movie_locations ml
+        join locations l on l.location_id = ml.location_id
+        where ml.movie_id = {movie_id}
+        order by ml.is_primary_location desc, ml.scene_count desc, l.city_name
+        limit 6;
         """
     )
 
@@ -314,12 +314,12 @@ def get_movie_stops(movie_id: int) -> list[list[str]]:
 def get_direct_flight(source_airport: str, dest_airport: str) -> list[str] | None:
     rows = mysql_query(
         f"""
-        SELECT flight_id, carrier, source_airport, dest_airport, depart_time, arrive_time, distance_miles
-        FROM flights
-        WHERE source_airport = '{sql_escape(source_airport)}'
-          AND dest_airport = '{sql_escape(dest_airport)}'
-        ORDER BY distance_miles, flight_id
-        LIMIT 1;
+        select flight_id, carrier, source_airport, dest_airport, depart_time, arrive_time, distance_miles
+        from flights
+        where source_airport = '{sql_escape(source_airport)}'
+          and dest_airport = '{sql_escape(dest_airport)}'
+        order by distance_miles, flight_id
+        limit 1;
         """
     )
     return rows[0] if rows else None
@@ -328,12 +328,12 @@ def get_direct_flight(source_airport: str, dest_airport: str) -> list[str] | Non
 def get_route_candidates(source_airport: str, dest_airport: str) -> list[list[str]]:
     return mysql_query(
         f"""
-        SELECT flight_id, carrier, source_airport, dest_airport, depart_time, arrive_time, distance_miles
-        FROM flights
-        WHERE source_airport = '{sql_escape(source_airport)}'
-          AND dest_airport = '{sql_escape(dest_airport)}'
-        ORDER BY distance_miles, flight_id
-        LIMIT 3;
+        select flight_id, carrier, source_airport, dest_airport, depart_time, arrive_time, distance_miles
+        from flights
+        where source_airport = '{sql_escape(source_airport)}'
+          and dest_airport = '{sql_escape(dest_airport)}'
+        order by distance_miles, flight_id
+        limit 3;
         """
     )
 
@@ -341,11 +341,11 @@ def get_route_candidates(source_airport: str, dest_airport: str) -> list[list[st
 def get_outgoing_airports(source_airport: str, limit: int = 60) -> list[str]:
     rows = mysql_query(
         f"""
-        SELECT DISTINCT dest_airport
-        FROM flights
-        WHERE source_airport = '{sql_escape(source_airport)}'
-        ORDER BY dest_airport
-        LIMIT {limit};
+        select distinct dest_airport
+        from flights
+        where source_airport = '{sql_escape(source_airport)}'
+        order by dest_airport
+        limit {limit};
         """
     )
     return [row[0] for row in rows]
@@ -600,7 +600,7 @@ def build_itinerary(movie_id: int, budget: float, departure_city: str) -> Itiner
 def get_saved_plans(app_user_id: int) -> list[list[str]]:
     return mysql_query(
         f"""
-        SELECT
+        select
             p.saved_plan_id,
             p.plan_name,
             m.title,
@@ -608,15 +608,15 @@ def get_saved_plans(app_user_id: int) -> list[list[str]]:
             p.budget,
             p.total_estimated_budget,
             p.status,
-            COUNT(s.location_id) AS stop_count,
-            DATE_FORMAT(p.updated_at, '%Y-%m-%d %H:%i')
-        FROM saved_trip_plans AS p
-        JOIN movies AS m ON m.movie_id = p.movie_id
-        LEFT JOIN saved_trip_stops AS s ON s.saved_plan_id = p.saved_plan_id
-        WHERE p.app_user_id = {app_user_id}
-        GROUP BY p.saved_plan_id, p.plan_name, m.title, p.departure_city, p.budget,
+            count(s.location_id) as stop_count,
+            date_format(p.updated_at, '%Y-%m-%d %H:%i')
+        from saved_trip_plans as p
+        join movies as m on m.movie_id = p.movie_id
+        left join saved_trip_stops as s on s.saved_plan_id = p.saved_plan_id
+        where p.app_user_id = {app_user_id}
+        group by p.saved_plan_id, p.plan_name, m.title, p.departure_city, p.budget,
                  p.total_estimated_budget, p.status, p.updated_at
-        ORDER BY p.updated_at DESC, p.saved_plan_id DESC;
+        order by p.updated_at desc, p.saved_plan_id desc;
         """
     )
 
@@ -624,11 +624,11 @@ def get_saved_plans(app_user_id: int) -> list[list[str]]:
 def get_audit_rows(app_user_id: int) -> list[list[str]]:
     return mysql_query(
         f"""
-        SELECT event_type, COALESCE(saved_plan_id, ''), detail, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i')
-        FROM stage4_audit_log
-        WHERE app_user_id = {app_user_id}
-        ORDER BY created_at DESC, audit_id DESC
-        LIMIT 8;
+        select event_type, coalesce(saved_plan_id, ''), detail, date_format(created_at, '%Y-%m-%d %H:%i')
+        from stage4_audit_log
+        where app_user_id = {app_user_id}
+        order by created_at desc, audit_id desc
+        limit 8;
         """
     )
 
@@ -652,10 +652,10 @@ def save_itinerary_transaction(
 
     rows = mysql_query(
         f"""
-        SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-        START TRANSACTION;
+        set transaction ISOLATION LEVEL read committed;
+        start transaction;
 
-        INSERT INTO saved_trip_plans (
+        insert into saved_trip_plans (
             app_user_id,
             movie_id,
             plan_name,
@@ -666,7 +666,7 @@ def save_itinerary_transaction(
             total_days,
             status
         )
-        SELECT
+        select
             {app_user_id},
             m.movie_id,
             '{sql_escape(plan_name)}',
@@ -676,38 +676,38 @@ def save_itinerary_transaction(
             {plan.total_estimated_budget:.2f},
             {plan.total_days},
             '{status}'
-        FROM movies AS m
-        JOIN movie_locations AS ml ON ml.movie_id = m.movie_id
-        WHERE m.movie_id = {movie_id}
-          AND EXISTS (
-              SELECT 1
-              FROM locations AS lx
-              JOIN movie_locations AS mlx ON mlx.location_id = lx.location_id
-              WHERE mlx.movie_id = m.movie_id
+        from movies as m
+        join movie_locations as ml on ml.movie_id = m.movie_id
+        where m.movie_id = {movie_id}
+          and exists (
+              select 1
+              from locations as lx
+              join movie_locations as mlx on mlx.location_id = lx.location_id
+              where mlx.movie_id = m.movie_id
           )
-        GROUP BY m.movie_id
-        HAVING COUNT(DISTINCT ml.location_id) >= 1;
+        group by m.movie_id
+        having count(distinct ml.location_id) >= 1;
 
-        SET @saved_plan_id = LAST_INSERT_ID();
+        set @saved_plan_id = last_insert_id();
 
-        INSERT INTO saved_trip_stops (saved_plan_id, stop_order, location_id, airport_code, recommended_days)
-        VALUES
+        insert into saved_trip_stops (saved_plan_id, stop_order, location_id, airport_code, recommended_days)
+        values
         {stops_sql};
 
-        INSERT INTO stage4_audit_log (event_type, saved_plan_id, app_user_id, detail)
-        SELECT
+        insert into stage4_audit_log (event_type, saved_plan_id, app_user_id, detail)
+        select
             'PLAN_TRANSACTION_CREATED',
             p.saved_plan_id,
             p.app_user_id,
-            CONCAT('Saved ', COUNT(s.location_id), ' stops for ', MAX(m.title))
-        FROM saved_trip_plans AS p
-        JOIN saved_trip_stops AS s ON s.saved_plan_id = p.saved_plan_id
-        JOIN movies AS m ON m.movie_id = p.movie_id
-        WHERE p.saved_plan_id = @saved_plan_id
-        GROUP BY p.saved_plan_id, p.app_user_id;
+            concat('Saved ', count(s.location_id), ' stops for ', max(m.title))
+        from saved_trip_plans as p
+        join saved_trip_stops as s on s.saved_plan_id = p.saved_plan_id
+        join movies as m on m.movie_id = p.movie_id
+        where p.saved_plan_id = @saved_plan_id
+        group by p.saved_plan_id, p.app_user_id;
 
-        SELECT @saved_plan_id;
-        COMMIT;
+        select @saved_plan_id;
+        commit;
         """
     )
     if not rows or not rows[-1][0] or rows[-1][0] == "0":
@@ -718,15 +718,15 @@ def save_itinerary_transaction(
 def update_saved_plan(app_user_id: int, saved_plan_id: int, plan_name: str, budget: float) -> None:
     mysql_query(
         f"""
-        UPDATE saved_trip_plans
-        SET plan_name = '{sql_escape(plan_name.strip())}',
+        update saved_trip_plans
+        set plan_name = '{sql_escape(plan_name.strip())}',
             budget = {budget:.2f},
-            status = CASE
-                WHEN total_estimated_budget > {budget:.2f} THEN 'over_budget'
-                ELSE 'within_budget'
-            END
-        WHERE saved_plan_id = {saved_plan_id}
-          AND app_user_id = {app_user_id};
+            status = case
+                when total_estimated_budget > {budget:.2f} then 'over_budget'
+                else 'within_budget'
+            end
+        where saved_plan_id = {saved_plan_id}
+          and app_user_id = {app_user_id};
         """
     )
 
@@ -734,9 +734,9 @@ def update_saved_plan(app_user_id: int, saved_plan_id: int, plan_name: str, budg
 def delete_saved_plan(app_user_id: int, saved_plan_id: int) -> None:
     mysql_query(
         f"""
-        DELETE FROM saved_trip_plans
-        WHERE saved_plan_id = {saved_plan_id}
-          AND app_user_id = {app_user_id};
+        delete from saved_trip_plans
+        where saved_plan_id = {saved_plan_id}
+          and app_user_id = {app_user_id};
         """
     )
 
