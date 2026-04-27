@@ -599,35 +599,6 @@ def render_page(
             f"<option value='{html.escape(title)}'>{html.escape(title)} | rating {rating} | {genre} | {filming_stop_count} stop(s)</option>"
         )
 
-    featured_rows = []
-    for title, movie_id, rating, genre, filming_stop_count in featured_movies[:12]:
-        featured_rows.append(
-            [
-                f"#{movie_id}",
-                title,
-                genre,
-                rating,
-                filming_stop_count,
-            ]
-        )
-    featured_table = render_table(
-        ["ID", "Movie", "Genre", "Rating", "Stops"],
-        featured_rows,
-        "No movies are available from the database.",
-    )
-
-    rank_rows = []
-    for index, (title, movie_id, rating, genre, filming_stop_count) in enumerate(featured_movies[:8], start=1):
-        rank_rows.append(
-            f"""
-            <tr>
-              <td>{index}</td>
-              <td>{html.escape(title)}</td>
-              <td>{html.escape(rating)}</td>
-            </tr>
-            """
-        )
-
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -994,7 +965,6 @@ def render_page(
     </a>
     <nav class="main-nav" aria-label="Primary navigation">
       <a class="nav-link active" href="/">Home</a>
-      <a class="nav-link" href="#movies">Movies</a>
       <a class="nav-link" href="#planner">Planner</a>
       <a class="nav-link" href="#itinerary">Itinerary</a>
       <a class="nav-link" href="#database">Database</a>
@@ -1045,13 +1015,6 @@ def render_page(
           </div>
         </section>
 
-        <section class="panel" id="movies">
-          <header class="panel-header">
-            <h2>Featured Movies</h2>
-          </header>
-          {featured_table}
-        </section>
-
         <section class="panel" id="itinerary">
           <header class="panel-header">
             <h2>Generated Itinerary</h2>
@@ -1081,18 +1044,6 @@ def render_page(
               <li><span>Port</span><strong>{html.escape(DB_PORT)}</strong></li>
               <li><span>Database</span><strong>{html.escape(DB_NAME)}</strong></li>
             </ul>
-          </div>
-        </section>
-
-        <section class="panel">
-          <header class="panel-header">
-            <h2>Top Rated</h2>
-          </header>
-          <div class="panel-body">
-            <table class="rank-table">
-              <thead><tr><th>#</th><th>Movie</th><th>Rating</th></tr></thead>
-              <tbody>{''.join(rank_rows)}</tbody>
-            </table>
           </div>
         </section>
       </aside>
