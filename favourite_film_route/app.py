@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -17,6 +18,7 @@ DB_USER = os.environ.get("SCENETRIP_DB_USER", "root")
 DB_NAME = os.environ.get("SCENETRIP_DB_NAME", "scenetrip")
 HOST = os.environ.get("SCENETRIP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SCENETRIP_WEB_PORT", "8000"))
+MYSQL_COMMAND = os.environ.get("SCENETRIP_MYSQL_COMMAND", "mysql")
 
 
 @dataclass
@@ -42,9 +44,10 @@ class ItineraryPlan:
 
 
 def mysql_query(sql: str) -> list[list[str]]:
+    mysql_command = shlex.split(MYSQL_COMMAND)
     proc = subprocess.run(
         [
-            "mysql",
+            *mysql_command,
             "-u",
             DB_USER,
             "--socket",
@@ -246,6 +249,8 @@ def find_best_path(source_airport: str, dest_airport: str, max_legs: int = 3) ->
     direct = get_route_candidates(source_airport, dest_airport)
     if direct:
         return [direct[0]]
+    if max_legs <= 1:
+        return None
 
     visited = {source_airport}
     frontier: list[tuple[str, list[list[str]]]] = [(source_airport, [])]
@@ -312,7 +317,7 @@ def choose_best_origin(departure_options: list[list[str]], raw_stops: list[list[
         airport_code = option[2]
         score = 0
         for stop_airport in stop_airports[:4]:
-            path = find_best_path(airport_code, stop_airport, max_legs=2)
+            path = find_best_path(airport_code, stop_airport, max_legs=1)
             if path is not None:
                 score += 5 - len(path)
         if score > best_score:
@@ -341,7 +346,7 @@ def build_itinerary(movie_id: int, budget: float, departure_city: str) -> Itiner
     remaining = raw_stops.copy()
     fallback_used = False
 
-    # Prefer a compact itinerary with up to 3 reachable stops.
+    # Keep local generation responsive by checking direct flights first, then falling back to transfer legs.
     while remaining and len(chosen_stops) < 3:
         picked_index = None
         picked_path = None
@@ -351,7 +356,7 @@ def build_itinerary(movie_id: int, budget: float, departure_city: str) -> Itiner
                 picked_index = idx
                 picked_path = []
                 break
-            path = find_best_path(current_airport, stop_airport, max_legs=3)
+            path = find_best_path(current_airport, stop_airport, max_legs=1)
             if path is not None:
                 picked_index = idx
                 picked_path = path
@@ -428,7 +433,7 @@ def build_itinerary(movie_id: int, budget: float, departure_city: str) -> Itiner
             }
         )
     else:
-        return_path = find_best_path(current_airport, origin_airport, max_legs=3)
+        return_path = find_best_path(current_airport, origin_airport, max_legs=1)
         if return_path is not None:
             append_leg_rows(leg_rows, return_path)
         else:
@@ -594,6 +599,35 @@ def render_page(
             f"<option value='{html.escape(title)}'>{html.escape(title)} | rating {rating} | {genre} | {filming_stop_count} stop(s)</option>"
         )
 
+    featured_rows = []
+    for title, movie_id, rating, genre, filming_stop_count in featured_movies[:12]:
+        featured_rows.append(
+            [
+                f"#{movie_id}",
+                title,
+                genre,
+                rating,
+                filming_stop_count,
+            ]
+        )
+    featured_table = render_table(
+        ["ID", "Movie", "Genre", "Rating", "Stops"],
+        featured_rows,
+        "No movies are available from the database.",
+    )
+
+    rank_rows = []
+    for index, (title, movie_id, rating, genre, filming_stop_count) in enumerate(featured_movies[:8], start=1):
+        rank_rows.append(
+            f"""
+            <tr>
+              <td>{index}</td>
+              <td>{html.escape(title)}</td>
+              <td>{html.escape(rating)}</td>
+            </tr>
+            """
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -602,100 +636,193 @@ def render_page(
   <title>SceneTrip Planner</title>
   <style>
     :root {{
-      --bg: #f5efe5;
-      --panel: rgba(255,255,255,0.86);
-      --ink: #21303b;
-      --muted: #63727d;
-      --accent: #b54d26;
-      --accent-2: #2f6f62;
-      --line: #d7c9b7;
-      --shadow: 0 22px 60px rgba(71, 54, 38, 0.12);
+      --bg: #f6f6f6;
+      --panel: #ffffff;
+      --panel-head: #eeeeee;
+      --ink: #222222;
+      --muted: #666666;
+      --line: #d7d7d7;
+      --line-soft: #e9e9e9;
+      --link: #1f73cf;
+      --blue: #2f86d7;
+      --blue-dark: #176fb9;
+      --green: #1f7a50;
+      --amber: #956511;
       --danger: #a03232;
       --success: #1d6b44;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       color: var(--ink);
-      font-family: Georgia, "Times New Roman", serif;
-      background:
-        radial-gradient(circle at top left, rgba(181,77,38,0.17), transparent 32%),
-        radial-gradient(circle at bottom right, rgba(47,111,98,0.15), transparent 28%),
-        linear-gradient(180deg, #faf6f1 0%, var(--bg) 100%);
+      background: var(--bg);
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }}
+    a {{ color: var(--link); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    code {{
+      border: 1px solid var(--line-soft);
+      border-radius: 3px;
+      background: #fafafa;
+      padding: 1px 4px;
+      color: #333333;
+    }}
+    .topbar {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      min-height: 48px;
+      align-items: stretch;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+      box-shadow: var(--shadow);
+    }}
+    .brand {{
+      display: flex;
+      min-width: 164px;
+      align-items: center;
+      gap: 9px;
+      padding: 0 20px;
+      color: #202020;
+      font-size: 18px;
+      font-weight: 700;
+    }}
+    .brand:hover {{ text-decoration: none; }}
+    .brand-mark {{
+      display: grid;
+      width: 24px;
+      height: 24px;
+      place-items: center;
+      border: 2px solid #222222;
+      color: #222222;
+      font-size: 13px;
+      line-height: 1;
+      transform: rotate(-45deg);
+    }}
+    .brand-mark span {{ transform: rotate(45deg); }}
+    .main-nav {{
+      display: flex;
+      flex: 1;
+      min-width: 0;
+    }}
+    .nav-link {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 17px;
+      color: #222222;
+      font-weight: 700;
+      white-space: nowrap;
+    }}
+    .nav-link:hover,
+    .nav-link.active {{
+      background: #eeeeee;
+      text-decoration: none;
+    }}
+    .auth-actions {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 16px;
+    }}
+    .top-status {{
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #f7f7f7;
+      padding: 7px 10px;
+      color: #333333;
+      font-weight: 700;
+      white-space: nowrap;
     }}
     .shell {{
-      max-width: 1200px;
+      width: min(1160px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 30px 20px 60px;
-    }}
-    .hero {{
-      border-radius: 28px;
-      padding: 30px;
-      background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(246,235,223,0.95));
-      border: 1px solid rgba(181,77,38,0.16);
-      box-shadow: var(--shadow);
-      margin-bottom: 24px;
-    }}
-    h1 {{
-      margin: 0 0 12px;
-      font-size: clamp(2.4rem, 6vw, 4.7rem);
-      letter-spacing: -0.05em;
-      line-height: 0.95;
-    }}
-    .subtitle {{
-      margin: 0;
-      max-width: 780px;
-      color: var(--muted);
-      font-size: 1.08rem;
-      line-height: 1.7;
+      padding: 28px 0 40px;
     }}
     .grid {{
       display: grid;
-      gap: 20px;
-      grid-template-columns: repeat(12, 1fr);
+      grid-template-columns: minmax(0, 1fr) 326px;
+      gap: 26px;
     }}
-    .card {{
-      grid-column: span 12;
+    .main-column,
+    .side-column {{
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 14px;
+    }}
+    .panel {{
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 4px;
       background: var(--panel);
-      border-radius: 22px;
-      border: 1px solid rgba(33,48,59,0.08);
       box-shadow: var(--shadow);
-      padding: 22px;
     }}
-    .half {{ grid-column: span 6; }}
-    .wide {{ grid-column: span 12; }}
+    .panel-header {{
+      display: flex;
+      min-height: 42px;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-head);
+      padding: 0 14px;
+    }}
+    .panel-header h1,
+    .panel-header h2 {{
+      margin: 0;
+      color: #111111;
+      font-size: 15px;
+      font-weight: 700;
+    }}
+    .panel-body {{ padding: 14px; }}
     .stats {{
       display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      grid-template-columns: repeat(2, 1fr);
+      border-top: 1px solid #ffffff;
     }}
-    .stat-card, .summary-tile, .budget-card, .stop-card {{
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: rgba(255,255,255,0.74);
-      padding: 16px;
+    .stat-card {{
+      min-height: 70px;
+      border-right: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line-soft);
+      padding: 12px;
     }}
-    .stat-card span, .summary-tile span, .budget-card span, .stop-card span {{
+    .stat-card:nth-child(2n) {{ border-right: 0; }}
+    .stat-card span,
+    .summary-tile span,
+    .budget-card span,
+    .stop-card span {{
       display: block;
+      margin-bottom: 5px;
       color: var(--muted);
-      font-size: 0.9rem;
-      margin-bottom: 8px;
+      font-size: 12px;
     }}
-    .stat-card strong, .summary-tile strong, .budget-card strong {{
-      font-size: 1.7rem;
+    .stat-card strong {{
+      display: block;
+      color: #111111;
+      font-size: 20px;
     }}
-    h2 {{
-      margin: 0 0 14px;
-      font-size: 1.4rem;
+    .summary-tile,
+    .budget-card,
+    .stop-card {{
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #ffffff;
+      padding: 12px;
     }}
-    h3 {{
-      margin: 22px 0 12px;
-      font-size: 1.12rem;
+    .summary-tile strong,
+    .budget-card strong {{
+      display: block;
+      color: #111111;
+      font-size: 16px;
     }}
     .form-grid {{
       display: grid;
-      gap: 12px;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      grid-template-columns: minmax(0, 1.5fr) 140px minmax(0, 1fr);
+      gap: 10px;
     }}
     form {{
       display: grid;
@@ -703,140 +830,272 @@ def render_page(
     }}
     label {{
       display: grid;
-      gap: 7px;
+      gap: 6px;
       color: var(--muted);
-      font-size: 0.92rem;
+      font-size: 13px;
+    }}
+    .actions-row {{
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 12px;
     }}
     select, input, button {{
       font: inherit;
-      border-radius: 12px;
     }}
     select, input {{
       border: 1px solid var(--line);
-      padding: 12px 13px;
-      background: rgba(255,255,255,0.95);
+      border-radius: 20px;
+      padding: 9px 13px;
+      background: #ffffff;
       color: var(--ink);
+      outline: 0;
     }}
+    select:focus,
+    input:focus {{ border-color: #a8c7e6; box-shadow: 0 0 0 2px rgba(47,134,215,0.12); }}
     button {{
-      border: 0;
-      padding: 13px 18px;
-      background: var(--accent);
-      color: #fff;
+      min-height: 36px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 7px 15px;
+      background: var(--blue);
+      color: #ffffff;
       font-weight: 700;
       cursor: pointer;
     }}
+    button:hover {{ background: var(--blue-dark); }}
+    .btn-muted {{ background: #dddddd; color: #222222; }}
+    .btn-muted:hover {{ background: #d2d2d2; }}
+    .note,
+    .empty {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }}
+    .empty {{ padding: 14px; }}
+    .compact-note {{ color: var(--muted); font-size: 13px; }}
     .route-banner {{
-      margin-top: 18px;
-      border-radius: 16px;
-      padding: 16px 18px;
-      background: linear-gradient(135deg, rgba(47,111,98,0.12), rgba(181,77,38,0.12));
-      border: 1px solid rgba(47,111,98,0.14);
+      margin: 14px 0;
+      border: 1px solid #cfe1f3;
+      border-radius: 4px;
+      padding: 12px 14px;
+      background: #f4f9ff;
+      color: #1f4f7d;
       font-weight: 700;
       line-height: 1.6;
     }}
     .summary-grid, .budget-grid, .stops-grid {{
       display: grid;
-      gap: 14px;
+      gap: 10px;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }}
+    .itinerary-shell h3 {{
+      margin: 16px 0 8px;
+      font-size: 14px;
     }}
     .stop-card strong {{
       display: block;
-      margin-bottom: 6px;
-      font-size: 1.05rem;
+      margin-bottom: 5px;
+      color: #111111;
+      font-size: 14px;
     }}
     .stop-card small {{
       display: block;
       color: var(--muted);
-      margin-top: 4px;
+      margin-top: 3px;
     }}
     table {{
-      width: 100%;
+      width: calc(100% - 28px);
+      margin: 0 14px 14px;
       border-collapse: collapse;
-      border-radius: 14px;
-      overflow: hidden;
-      font-size: 0.96rem;
+      font-size: 14px;
     }}
     th, td {{
       text-align: left;
       padding: 10px 12px;
-      border-bottom: 1px solid #eadfd3;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: middle;
     }}
     th {{
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      font-size: 0.81rem;
-      background: #f2e4d5;
+      color: #111111;
+      font-weight: 700;
+      background: #ffffff;
     }}
-    .note, .empty {{
-      color: var(--muted);
-      line-height: 1.6;
+    td:last-child,
+    th:last-child {{ text-align: right; }}
+    .rank-table {{
+      width: 100%;
+      margin: 0;
+    }}
+    .rank-table th,
+    .rank-table td {{ padding: 8px 0; }}
+    .rank-table th:last-child,
+    .rank-table td:last-child {{ text-align: right; }}
+    .status-list {{
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .status-list li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--line-soft);
+      padding: 8px 0;
+    }}
+    .status-list li:last-child {{ border-bottom: 0; }}
+    .tag {{
+      display: inline-flex;
+      min-width: 64px;
+      justify-content: center;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+      padding: 2px 6px;
+      color: var(--green);
+      background: #edf8f2;
+      font-size: 12px;
+      font-weight: 700;
     }}
     .flash {{
-      margin-bottom: 18px;
-      padding: 14px 16px;
-      border-radius: 14px;
+      margin-bottom: 14px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      padding: 11px 14px;
       font-weight: 700;
     }}
     .flash.error {{ background: rgba(160,50,50,0.12); color: var(--danger); }}
     .flash.success {{ background: rgba(29,107,68,0.12); color: var(--success); }}
     @media (max-width: 920px) {{
-      .half {{ grid-column: span 12; }}
+      .topbar {{ flex-wrap: wrap; }}
+      .brand {{ min-height: 48px; }}
+      .main-nav {{
+        order: 3;
+        width: 100%;
+        overflow-x: auto;
+        border-top: 1px solid var(--line-soft);
+      }}
+      .nav-link {{ min-height: 42px; }}
+      .auth-actions {{ margin-left: auto; }}
+      .shell {{
+        width: calc(100vw - 20px);
+        padding-top: 16px;
+      }}
+      .grid {{ grid-template-columns: 1fr; gap: 14px; }}
+      .form-grid {{ grid-template-columns: 1fr; }}
+      table {{ display: block; overflow-x: auto; white-space: nowrap; }}
     }}
   </style>
 </head>
 <body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="SceneTrip home">
+      <span class="brand-mark"><span>S</span></span>
+      <span>SceneTrip</span>
+    </a>
+    <nav class="main-nav" aria-label="Primary navigation">
+      <a class="nav-link active" href="/">Home</a>
+      <a class="nav-link" href="#movies">Movies</a>
+      <a class="nav-link" href="#planner">Planner</a>
+      <a class="nav-link" href="#itinerary">Itinerary</a>
+      <a class="nav-link" href="#database">Database</a>
+    </nav>
+    <div class="auth-actions" aria-label="Application status">
+      <span class="top-status">Stage 4.1</span>
+    </div>
+  </header>
+
   <main class="shell">
-    <section class="hero">
-      <h1>SceneTrip Planner</h1>
-    </section>
-
     {flash_html}
-
-    <section class="card">
-      <h2>Database Snapshot</h2>
-      <div class="stats">{summary_html}</div>
-      <p class="note">Connection target: <code>{html.escape(DB_USER)}</code> on <code>{html.escape(DB_SOCKET)}</code>, database <code>{html.escape(DB_NAME)}</code>.</p>
-    </section>
-
     <section class="grid">
-      <article class="card half">
-        <h2>Generate Your Itinerary</h2>
-        <form method="POST" action="/plan">
-          <div class="form-grid">
-            <label>
-              Favorite movie
-              <input
-                name="movie_title"
-                list="movie-suggestions"
-                value="{html.escape(selected_movie_title)}"
-                placeholder="Type a movie title keyword"
-                required
-              />
-              <datalist id="movie-suggestions">
-                {''.join(movie_suggestions)}
-              </datalist>
-            </label>
-            <label>
-              Budget (USD)
-              <input name="budget" type="number" min="200" step="50" value="{html.escape(selected_budget)}" required />
-            </label>
-            <label>
-              Departure city
-              <input name="departure_city" value="{html.escape(departure_city)}" placeholder="Chicago, New York, Los Angeles" required />
-            </label>
+      <div class="main-column">
+        <section class="panel" id="planner">
+          <header class="panel-header">
+            <h1>Trip Planner</h1>
+          </header>
+          <div class="panel-body">
+            <form method="POST" action="/plan">
+              <div class="form-grid">
+                <label>
+                  Favorite movie
+                  <input
+                    name="movie_title"
+                    list="movie-suggestions"
+                    value="{html.escape(selected_movie_title)}"
+                    placeholder="Movie title"
+                    required
+                  />
+                  <datalist id="movie-suggestions">
+                    {''.join(movie_suggestions)}
+                  </datalist>
+                </label>
+                <label>
+                  Budget
+                  <input name="budget" type="number" min="200" step="50" value="{html.escape(selected_budget)}" required />
+                </label>
+                <label>
+                  Departure city
+                  <input name="departure_city" value="{html.escape(departure_city)}" placeholder="City name" required />
+                </label>
+              </div>
+              <div class="actions-row">
+                <button type="submit">Build Itinerary</button>
+                <span class="compact-note">Uses the live MySQL data loaded for Stage 4.</span>
+              </div>
+            </form>
           </div>
-          <button type="submit">Build Itinerary</button>
-        </form>
-      </article>
+        </section>
 
-      <article class="card half">
-        <h2>Ready To Plan</h2>
-      </article>
+        <section class="panel" id="movies">
+          <header class="panel-header">
+            <h2>Featured Movies</h2>
+          </header>
+          {featured_table}
+        </section>
 
-      <article class="card wide">
-        <h2>Generated Itinerary</h2>
-        {render_itinerary(itinerary)}
-      </article>
+        <section class="panel" id="itinerary">
+          <header class="panel-header">
+            <h2>Generated Itinerary</h2>
+          </header>
+          <div class="panel-body">
+            {render_itinerary(itinerary)}
+          </div>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel" id="database">
+          <header class="panel-header">
+            <h2>Database Snapshot</h2>
+          </header>
+          <div class="stats">{summary_html}</div>
+        </section>
+
+        <section class="panel">
+          <header class="panel-header">
+            <h2>Connection</h2>
+            <span class="tag">Live</span>
+          </header>
+          <div class="panel-body">
+            <ul class="status-list">
+              <li><span>User</span><strong>{html.escape(DB_USER)}</strong></li>
+              <li><span>Port</span><strong>{html.escape(DB_PORT)}</strong></li>
+              <li><span>Database</span><strong>{html.escape(DB_NAME)}</strong></li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header class="panel-header">
+            <h2>Top Rated</h2>
+          </header>
+          <div class="panel-body">
+            <table class="rank-table">
+              <thead><tr><th>#</th><th>Movie</th><th>Rating</th></tr></thead>
+              <tbody>{''.join(rank_rows)}</tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
     </section>
   </main>
 </body>
